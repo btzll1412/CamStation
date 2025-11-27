@@ -1,1 +1,35 @@
+# GUI Framework
+PyQt6>=6.5.0
+PyQt6-WebEngine>=6.5.0
 
+# Video Streaming
+opencv-python>=4.8.0
+numpy>=1.24.0
+
+# HTTP/API Communication
+requests>=2.31.0
+httpx>=0.24.0
+
+# Async Support
+aiohttp>=3.8.0
+
+# Configuration
+pyyaml>=6.0
+python-dotenv>=1.0.0
+
+# XML Parsing (for ISAPI responses)
+xmltodict>=0.13.0
+lxml>=4.9.0
+
+# Database (for local device storage)
+sqlalchemy>=2.0.0
+
+# Utilities
+python-dateutil>=2.8.0
+Pillow>=10.0.0
+
+# Development
+pytest>=7.4.0
+pytest-qt>=4.2.0
+black>=23.0.0
+flake8>=6.0.0
