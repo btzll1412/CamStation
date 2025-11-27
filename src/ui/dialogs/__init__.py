@@ -1,1 +1,3 @@
-
+"""
+CamStation dialog windows.
+"""
