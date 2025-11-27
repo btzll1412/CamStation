@@ -1,1 +1,3 @@
-
+"""
+CamStation UI components.
+"""
