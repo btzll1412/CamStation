@@ -24,6 +24,7 @@ from datetime import datetime, timedelta
 from ui.styles import get_stylesheet, COLORS
 from ui.device_tree import DeviceTreeWidget
 from ui.live_view import LiveViewWidget
+from ui.playback_view import PlaybackViewWidget
 from ui.dialogs.add_device_dialog import AddDeviceDialog
 from ui.components.timeline import TimelineWidget, TimelineEvent
 from ui.components.playback_controls import PlaybackControls
@@ -252,23 +253,20 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.playback_controls)
 
     def _create_playback_widget(self) -> QWidget:
-        """Create the playback view widget."""
-        widget = QWidget()
-        layout = QVBoxLayout(widget)
-        layout.setContentsMargins(0, 0, 0, 0)
+        """Create the multi-camera playback view widget."""
+        # Multi-camera playback grid (like live view but for recordings)
+        self.playback_view = PlaybackViewWidget(self.db)
+        self.playback_view.position_changed.connect(self._on_playback_position_from_grid)
+        self.playback_view.playback_started.connect(lambda: self.playback_controls.set_playing(True))
+        self.playback_view.playback_paused.connect(lambda: self.playback_controls.set_playing(False))
+        self.playback_view.cameras_changed.connect(self._on_playback_cameras_changed)
 
-        # Video display
-        self.playback_video = QLabel()
-        self.playback_video.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.playback_video.setStyleSheet(f"background-color: {COLORS['bg_dark']};")
-        self.playback_video.setText("Select a camera and time range to start playback")
-        self.playback_video.setSizePolicy(
-            QSizePolicy.Policy.Expanding,
-            QSizePolicy.Policy.Expanding
-        )
-        layout.addWidget(self.playback_video)
+        # Set default time range (last 24 hours)
+        end_time = datetime.now()
+        start_time = end_time - timedelta(hours=24)
+        self.playback_view.set_time_range(start_time, end_time)
 
-        return widget
+        return self.playback_view
 
     def _setup_dock_widgets(self):
         """Setup dock widgets (device tree, etc.)."""
@@ -384,14 +382,21 @@ class MainWindow(QMainWindow):
         self.live_btn.setChecked(False)
         self.playback_btn.setChecked(True)
 
-        # Check if we have a selected camera
-        if not self._selected_camera_id:
-            self.playback_video.setText(
-                "Select a camera from the device tree to view playback.\n\n"
-                "Note: Playback requires the camera or NVR to have recordings."
-            )
+        # Update timeline with playback view's time range
+        if hasattr(self, 'playback_view'):
+            end_time = datetime.now()
+            start_time = end_time - timedelta(hours=24)
+            self.playback_view.set_time_range(start_time, end_time)
+            self.timeline.set_time_range(start_time, end_time)
+            self.timeline.set_current_time(start_time)
+            self.playback_controls.set_duration(end_time - start_time)
 
-        self.statusbar.showMessage("Playback mode - Select a camera", 2000)
+        active = self.playback_view.get_active_count() if hasattr(self, 'playback_view') else 0
+        self.statusbar.showMessage(
+            f"Playback mode - Drag cameras to grid ({active} active)" if active > 0
+            else "Playback mode - Drag cameras from device tree to view recordings",
+            3000
+        )
 
     # === Action Handlers ===
 
@@ -570,150 +575,72 @@ class MainWindow(QMainWindow):
                 self._start_playback_for_camera(camera)
 
     def _start_playback_for_camera(self, camera):
-        """Start playback for a camera."""
-        try:
-            # Get device for RTSP URL construction
-            device = self.db.get_device(camera.device_id)
-            if not device:
-                self.playback_video.setText(f"Device not found for camera: {camera.name}")
-                return
+        """Start playback for a camera - adds to multi-camera grid."""
+        if hasattr(self, 'playback_view'):
+            # Add camera to the playback grid
+            self.playback_view.add_camera(camera.id)
+            self.statusbar.showMessage(f"Added {camera.name} to playback", 2000)
 
-            # Show loading message
-            self.playback_video.setText(f"Loading playback for {camera.name}...")
-
-            # Default to last 24 hours
-            end_time = datetime.now()
-            start_time = end_time - timedelta(hours=24)
-
-            # Stop existing playback controller
-            if self.playback_controller:
-                self.playback_controller.stop()
-
-            # Create playback controller
-            self.playback_controller = PlaybackController(
-                on_frame=self._on_playback_frame,
-                on_status=self._on_playback_status,
-                on_position=self._on_playback_position
-            )
-
-            # Build RTSP playback URL based on device type
-            rtsp_port = getattr(device, 'rtsp_port', 554) or 554
-
-            # For Hikvision devices, use playback URL format
-            base_url = f"rtsp://{device.username}:{device.password}@{device.ip_address}:{rtsp_port}"
-
-            # Try different URL formats
-            # Format 1: Hikvision playback
-            playback_url = f"{base_url}/Streaming/tracks/{camera.channel_number}01"
-
-            # Load recording
-            self.playback_controller.load_recording(
-                playback_url, start_time, end_time
-            )
-
-            # Setup timeline
-            self.timeline.set_time_range(start_time, end_time)
-            self.timeline.set_current_time(start_time)
-            self.timeline.set_thumbnail_callback(self.playback_controller.get_thumbnail)
-
-            # Setup playback controls
-            self.playback_controls.set_duration(end_time - start_time)
-
-            # Start playback
-            self.playback_controller.play()
-
-            self.statusbar.showMessage(f"Playing: {camera.name}", 2000)
-
-        except Exception as e:
-            error_msg = str(e)
-            self.playback_video.setText(
-                f"Playback Error\n\n"
-                f"Camera: {camera.name}\n"
-                f"Error: {error_msg}\n\n"
-                "Possible causes:\n"
-                "- No recordings available on device\n"
-                "- Camera does not have SD card storage\n"
-                "- Device is not reachable"
-            )
-            self.statusbar.showMessage(f"Playback error: {error_msg}", 5000)
-
-    def _on_playback_frame(self, frame, timestamp):
-        """Handle new playback frame."""
-        from PyQt6.QtGui import QImage, QPixmap
-        import cv2
-
-        # Convert BGR to RGB
-        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        h, w, ch = rgb_frame.shape
-        bytes_per_line = ch * w
-
-        q_img = QImage(rgb_frame.data, w, h, bytes_per_line, QImage.Format.Format_RGB888)
-
-        # Scale to fit
-        pixmap = QPixmap.fromImage(q_img).scaled(
-            self.playback_video.size(),
-            Qt.AspectRatioMode.KeepAspectRatio,
-            Qt.TransformationMode.SmoothTransformation
-        )
-
-        self.playback_video.setPixmap(pixmap)
-
-    def _on_playback_status(self, status: str):
-        """Handle playback status change."""
-        self.playback_controls.set_playing(status == "playing")
-        self.statusbar.showMessage(f"Playback: {status}", 2000)
-
-    def _on_playback_position(self, position: datetime):
-        """Handle playback position update."""
+    def _on_playback_position_from_grid(self, position: datetime):
+        """Handle position update from playback grid."""
         self.timeline.set_current_time(position)
         self.playback_controls.set_current_time(position)
 
+    def _on_playback_cameras_changed(self, count: int):
+        """Handle playback camera count change."""
+        self.statusbar.showMessage(f"Playback: {count} camera(s) active", 2000)
+
     def _on_timeline_position_changed(self, position: datetime):
-        """Handle timeline scrub."""
-        if self.playback_controller:
-            self.playback_controller.seek(position)
+        """Handle timeline scrub - synchronized across all playback cameras."""
+        if hasattr(self, 'playback_view'):
+            self.playback_view.seek_all(position)
 
     def _on_play(self):
-        """Handle play button."""
-        if self.playback_controller:
-            self.playback_controller.play()
+        """Handle play button - plays all cameras in playback grid."""
+        if hasattr(self, 'playback_view'):
+            self.playback_view.play_all()
 
     def _on_pause(self):
-        """Handle pause button."""
-        if self.playback_controller:
-            self.playback_controller.pause()
+        """Handle pause button - pauses all cameras in playback grid."""
+        if hasattr(self, 'playback_view'):
+            self.playback_view.pause_all()
 
     def _toggle_play_pause(self):
-        """Toggle play/pause."""
-        if self._current_mode == "playback" and self.playback_controller:
-            if self.playback_controller.is_playing:
-                self.playback_controller.pause()
+        """Toggle play/pause for all playback cameras."""
+        if self._current_mode == "playback" and hasattr(self, 'playback_view'):
+            if self.playback_view.is_playing:
+                self.playback_view.pause_all()
             else:
-                self.playback_controller.play()
+                self.playback_view.play_all()
 
     def _on_skip(self, seconds: int):
-        """Handle skip forward/backward."""
-        if self.playback_controller:
-            self.playback_controller.seek_relative(seconds)
+        """Handle skip forward/backward - synchronized across all cameras."""
+        if hasattr(self, 'playback_view'):
+            self.playback_view.seek_relative(seconds)
 
     def _on_step_forward(self):
         """Handle step forward."""
-        if self.playback_controller:
-            self.playback_controller.step_forward()
+        if hasattr(self, 'playback_view'):
+            self.playback_view.seek_relative(1.0 / 30.0)  # ~1 frame at 30fps
 
     def _on_step_backward(self):
         """Handle step backward."""
-        if self.playback_controller:
-            self.playback_controller.step_backward()
+        if hasattr(self, 'playback_view'):
+            self.playback_view.seek_relative(-1.0 / 30.0)  # ~1 frame at 30fps
 
     def _on_speed_changed(self, speed: float):
-        """Handle speed change."""
-        if self.playback_controller:
-            self.playback_controller.set_speed(speed)
+        """Handle speed change - applies to all playback cameras."""
+        # Speed control for multi-camera playback is per-cell
+        # TODO: Add global speed control to PlaybackViewWidget
+        pass
 
     def _set_grid_layout(self, rows: int, cols: int):
-        """Set the live view grid layout."""
-        self.live_view.set_grid_layout(rows, cols)
+        """Set the grid layout for current view (live or playback)."""
+        if self._current_mode == "live":
+            self.live_view.set_grid_layout(rows, cols)
+        else:
+            if hasattr(self, 'playback_view'):
+                self.playback_view.set_grid_layout(rows, cols)
         self.statusbar.showMessage(f"View: {rows}x{cols} grid", 2000)
 
     def _toggle_fullscreen(self):
@@ -736,12 +663,12 @@ class MainWindow(QMainWindow):
         """Handle window close event."""
         self._save_geometry()
 
-        # Stop all streams
+        # Stop all live streams
         self.stream_manager.stop_all()
 
-        # Stop playback
-        if self.playback_controller:
-            self.playback_controller.stop()
+        # Stop all playback streams
+        if hasattr(self, 'playback_view'):
+            self.playback_view.stop_all()
 
         # Close database
         self.db.close()
