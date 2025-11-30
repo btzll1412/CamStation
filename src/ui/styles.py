@@ -8,46 +8,52 @@ Design principles:
 - Consistent spacing
 """
 
-# Color palette
+# Color palette - UniFi Protect inspired
 COLORS = {
-    # Base colors
-    "bg_dark": "#0d1117",      # Darkest background
-    "bg_medium": "#161b22",     # Panel background
-    "bg_light": "#21262d",      # Elevated surfaces
-    "bg_hover": "#30363d",      # Hover state
+    # Base colors (deeper, richer blacks like UniFi)
+    "bg_dark": "#111111",       # Darkest background (camera cells)
+    "bg_medium": "#1a1a1a",     # Panel background
+    "bg_light": "#242424",      # Elevated surfaces
+    "bg_hover": "#333333",      # Hover state
 
     # Aliases for consistency across components
-    "bg_secondary": "#161b22",  # Same as bg_medium (for panels)
-    "bg_tertiary": "#21262d",   # Same as bg_light (for buttons/controls)
+    "bg_secondary": "#1a1a1a",  # Same as bg_medium (for panels)
+    "bg_tertiary": "#2a2a2a",   # Slightly lighter for buttons/controls
+
+    # Camera cell specific
+    "cell_bg": "#0a0a0a",       # Near-black for camera cells
+    "cell_border": "#2a2a2a",   # Subtle border between cells
+    "cell_gap": "#1a1a1a",      # Gap color (visible divider)
 
     # Borders
-    "border": "#30363d",
-    "border_light": "#484f58",
+    "border": "#333333",
+    "border_light": "#444444",
+    "border_subtle": "#222222",
 
     # Text
-    "text_primary": "#e6edf3",
-    "text_secondary": "#8b949e",
-    "text_muted": "#6e7681",
+    "text_primary": "#ffffff",
+    "text_secondary": "#999999",
+    "text_muted": "#666666",
 
-    # Accent colors
-    "accent_blue": "#2f81f7",
-    "accent_green": "#3fb950",
-    "accent_red": "#f85149",
-    "accent_orange": "#d29922",
-    "accent_purple": "#a371f7",
+    # Accent colors (UniFi-style blue)
+    "accent_blue": "#007aff",   # iOS/UniFi blue
+    "accent_green": "#34c759",  # Success green
+    "accent_red": "#ff3b30",    # Alert red
+    "accent_orange": "#ff9500", # Warning orange
+    "accent_purple": "#af52de", # Purple accent
 
     # Status colors
-    "online": "#3fb950",
-    "offline": "#f85149",
-    "warning": "#d29922",
-    "info": "#2f81f7",
+    "online": "#34c759",
+    "offline": "#ff3b30",
+    "warning": "#ff9500",
+    "info": "#007aff",
 
     # Timeline event colors
-    "motion": "#2f81f7",
-    "line_crossing": "#d29922",
-    "intrusion": "#f85149",
-    "lpr": "#a371f7",
-    "recording": "#30363d",
+    "motion": "#007aff",
+    "line_crossing": "#ff9500",
+    "intrusion": "#ff3b30",
+    "lpr": "#af52de",
+    "recording": "#333333",
 }
 
 
@@ -146,44 +152,54 @@ def get_stylesheet() -> str:
     /* ===== Buttons ===== */
     QPushButton {{
         background-color: {COLORS['bg_light']};
-        border: 1px solid {COLORS['border']};
-        border-radius: 6px;
-        padding: 8px 16px;
+        border: none;
+        border-radius: 8px;
+        padding: 10px 18px;
         font-weight: 500;
         min-width: 80px;
+        color: {COLORS['text_primary']};
     }}
 
     QPushButton:hover {{
         background-color: {COLORS['bg_hover']};
-        border-color: {COLORS['border_light']};
     }}
 
     QPushButton:pressed {{
-        background-color: {COLORS['bg_medium']};
+        background-color: {COLORS['bg_light']};
+        opacity: 0.8;
     }}
 
     QPushButton:disabled {{
         background-color: {COLORS['bg_medium']};
         color: {COLORS['text_muted']};
-        border-color: {COLORS['border']};
     }}
 
-    /* Primary button */
+    /* Primary button - UniFi blue style */
     QPushButton#primary {{
         background-color: {COLORS['accent_blue']};
-        border-color: {COLORS['accent_blue']};
+        border: none;
         color: white;
+        font-weight: 600;
     }}
 
     QPushButton#primary:hover {{
-        background-color: #388bfd;
+        background-color: #0088ff;
+    }}
+
+    QPushButton#primary:pressed {{
+        background-color: #0066cc;
     }}
 
     /* Danger button */
     QPushButton#danger {{
         background-color: {COLORS['accent_red']};
-        border-color: {COLORS['accent_red']};
+        border: none;
         color: white;
+        font-weight: 600;
+    }}
+
+    QPushButton#danger:hover {{
+        background-color: #ff5544;
     }}
 
     /* ===== Input Fields ===== */

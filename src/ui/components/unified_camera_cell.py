@@ -65,6 +65,7 @@ class UnifiedCameraCell(QFrame):
         self._status = "empty"  # empty, connecting, connected, playing, paused, error, no_recording
         self._is_selected = False
         self._is_drag_over = False
+        self._is_hovered = False  # Track mouse hover for X button
         self._current_time: Optional[datetime] = None
         self._target_time: Optional[datetime] = None  # Timeline position
         self._drag_start_pos: Optional[QPoint] = None  # For initiating drag
@@ -109,37 +110,38 @@ class UnifiedCameraCell(QFrame):
         self.setMouseTracking(True)
 
     def _update_style(self, drag_over: bool = False, selected: bool = False):
-        """Update cell styling."""
+        """Update cell styling - clean UniFi/DW style."""
         if drag_over:
             border_color = COLORS['accent_blue']
-            bg_color = COLORS['bg_secondary']
+            bg_color = COLORS.get('cell_bg', '#0a0a0a')
         elif selected:
             border_color = COLORS['accent_blue']
-            bg_color = COLORS['bg_dark']
+            bg_color = COLORS.get('cell_bg', '#0a0a0a')
         else:
-            border_color = COLORS['border']
-            bg_color = COLORS['bg_dark']
+            border_color = COLORS.get('cell_border', '#2a2a2a')
+            bg_color = COLORS.get('cell_bg', '#0a0a0a')
 
         self.setStyleSheet(f"""
             UnifiedCameraCell {{
                 background-color: {bg_color};
-                border: 2px solid {border_color};
-                border-radius: 4px;
+                border: 1px solid {border_color};
+                border-radius: 2px;
             }}
         """)
 
     def _show_empty_state(self):
         """Show empty cell."""
+        cell_bg = COLORS.get('cell_bg', '#0a0a0a')
         self.video_label.setStyleSheet(f"""
             QLabel {{
-                color: {COLORS['text_secondary']};
-                background-color: {COLORS['bg_dark']};
+                color: {COLORS['text_muted']};
+                background-color: {cell_bg};
             }}
         """)
         self.video_label.setText(
             "<div style='text-align: center;'>"
-            "<p style='font-size: 24px; margin: 0;'>📷</p>"
-            "<p style='margin: 8px 0 0 0; color: #6e7681;'>Drop camera here</p>"
+            "<p style='font-size: 32px; margin: 0; opacity: 0.3;'>+</p>"
+            "<p style='margin: 8px 0 0 0; color: #444444; font-size: 11px;'>Drop camera here</p>"
             "</div>"
         )
 
@@ -419,6 +421,18 @@ class UnifiedCameraCell(QFrame):
         except:
             pass
 
+    def enterEvent(self, event):
+        """Track mouse enter for hover effects."""
+        self._is_hovered = True
+        self.update()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        """Track mouse leave for hover effects."""
+        self._is_hovered = False
+        self.update()
+        super().leaveEvent(event)
+
     def paintEvent(self, event):
         """Paint overlays."""
         super().paintEvent(event)
@@ -429,15 +443,15 @@ class UnifiedCameraCell(QFrame):
         # Drop indicator
         if self._is_drag_over:
             painter.setPen(QColor(COLORS['accent_blue']))
-            painter.setBrush(QColor(47, 129, 247, 30))
+            painter.setBrush(QColor(0, 122, 255, 40))
             painter.drawRect(self.rect().adjusted(2, 2, -2, -2))
 
         if not self.camera:
             return
 
-        # Top-right X button area
-        btn_size = 24
-        btn_margin = 4
+        # Top-right X button area - larger and more visible
+        btn_size = 28
+        btn_margin = 8
         btn_rect = self.rect().adjusted(
             self.width() - btn_size - btn_margin,
             btn_margin,
@@ -445,58 +459,71 @@ class UnifiedCameraCell(QFrame):
             -(self.height() - btn_size - btn_margin)
         )
 
-        # X button background
-        painter.setBrush(QColor(0, 0, 0, 150))
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.drawRoundedRect(btn_rect, 4, 4)
+        # X button - always visible but more prominent on hover
+        if self._is_hovered:
+            # Bright red background on hover
+            painter.setBrush(QColor(COLORS['accent_red']))
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.drawRoundedRect(btn_rect, 6, 6)
+            painter.setPen(QColor("white"))
+        else:
+            # Semi-transparent dark background
+            painter.setBrush(QColor(0, 0, 0, 180))
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.drawRoundedRect(btn_rect, 6, 6)
+            painter.setPen(QColor(200, 200, 200))
 
-        # X text
-        painter.setPen(QColor(COLORS['text_primary']))
+        # X icon
         font = painter.font()
-        font.setPointSize(12)
+        font.setPointSize(14)
         font.setBold(True)
         painter.setFont(font)
         painter.drawText(btn_rect, Qt.AlignmentFlag.AlignCenter, "×")
 
-        # Bottom overlay
-        overlay_height = 32
+        # Bottom overlay - gradient style
+        overlay_height = 36
         overlay_rect = self.rect().adjusted(0, self.height() - overlay_height, 0, 0)
 
-        painter.fillRect(overlay_rect, QColor(0, 0, 0, 200))
+        # Gradient from transparent to dark
+        gradient_rect = self.rect().adjusted(0, self.height() - overlay_height - 20, 0, -overlay_height)
+        painter.fillRect(gradient_rect, QColor(0, 0, 0, 100))
+        painter.fillRect(overlay_rect, QColor(0, 0, 0, 220))
 
         # Camera name
         painter.setPen(QColor(COLORS['text_primary']))
-        font.setPointSize(10)
+        font.setPointSize(11)
+        font.setBold(True)
         painter.setFont(font)
         painter.drawText(
-            overlay_rect.adjusted(10, 0, -80, 0),
+            overlay_rect.adjusted(12, 0, -80, 0),
             Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
             self.camera.name
         )
 
         # Mode indicator (LIVE or time)
-        mode_x = overlay_rect.right() - 70
-        mode_y = overlay_rect.center().y() - 8
+        mode_x = overlay_rect.right() - 65
+        mode_y = overlay_rect.center().y() - 10
 
         if self._mode == "live":
-            # Red LIVE badge
-            painter.setBrush(QColor("#e53935"))
+            # Red LIVE badge - UniFi style
+            painter.setBrush(QColor(COLORS['accent_red']))
             painter.setPen(Qt.PenStyle.NoPen)
-            painter.drawRoundedRect(mode_x, mode_y, 45, 16, 3, 3)
+            painter.drawRoundedRect(mode_x, mode_y, 50, 20, 4, 4)
 
             painter.setPen(QColor("white"))
-            font.setPointSize(8)
+            font.setPointSize(9)
             font.setBold(True)
             painter.setFont(font)
-            painter.drawText(mode_x, mode_y, 45, 16, Qt.AlignmentFlag.AlignCenter, "● LIVE")
+            painter.drawText(mode_x, mode_y, 50, 20, Qt.AlignmentFlag.AlignCenter, "● LIVE")
         else:
             # Show playback time
             time_str = self._current_time.strftime("%H:%M:%S") if self._current_time else "--:--:--"
             painter.setPen(QColor(COLORS['text_secondary']))
-            font.setPointSize(9)
+            font.setPointSize(10)
+            font.setBold(False)
             painter.setFont(font)
             painter.drawText(
-                overlay_rect.adjusted(0, 0, -10, 0),
+                overlay_rect.adjusted(0, 0, -12, 0),
                 Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight,
                 time_str
             )
@@ -509,9 +536,9 @@ class UnifiedCameraCell(QFrame):
     # Mouse events
     def mousePressEvent(self, event: QMouseEvent):
         if event.button() == Qt.MouseButton.LeftButton:
-            # Check if clicking X button
-            btn_size = 24
-            btn_margin = 4
+            # Check if clicking X button (matches paintEvent dimensions)
+            btn_size = 28
+            btn_margin = 8
             btn_x = self.width() - btn_size - btn_margin
             btn_y = btn_margin
 

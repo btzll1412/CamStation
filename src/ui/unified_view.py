@@ -114,12 +114,14 @@ class UnifiedGridView(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        # Camera grid container
+        # Camera grid container - DW style with visible dividers
         self.grid_container = QWidget()
-        self.grid_container.setStyleSheet(f"background-color: {COLORS['bg_dark']};")
+        gap_color = COLORS.get('cell_gap', '#1a1a1a')
+        self.grid_container.setStyleSheet(f"background-color: {gap_color};")
         self.grid_layout = QGridLayout(self.grid_container)
-        self.grid_layout.setSpacing(4)
-        self.grid_layout.setContentsMargins(4, 4, 4, 4)
+        # Larger spacing creates visible divider lines between cells
+        self.grid_layout.setSpacing(3)
+        self.grid_layout.setContentsMargins(3, 3, 3, 3)
         self.grid_container.setAcceptDrops(True)
         layout.addWidget(self.grid_container, 1)
 
@@ -130,49 +132,52 @@ class UnifiedGridView(QWidget):
         self._setup_timeline(layout)
 
     def _setup_control_bar(self, parent_layout):
-        """Setup playback control bar."""
+        """Setup playback control bar - UniFi style."""
         control_bar = QFrame()
         control_bar.setStyleSheet(f"""
             QFrame {{
-                background-color: {COLORS['bg_secondary']};
-                border-top: 1px solid {COLORS['border']};
+                background-color: {COLORS['bg_medium']};
+                border-top: 1px solid {COLORS.get('border_subtle', '#222222')};
             }}
         """)
         control_layout = QHBoxLayout(control_bar)
-        control_layout.setContentsMargins(12, 8, 12, 8)
-        control_layout.setSpacing(12)
+        control_layout.setContentsMargins(16, 10, 16, 10)
+        control_layout.setSpacing(8)
 
-        # Date picker button
-        self.date_btn = QPushButton(f"📅 {datetime.now().strftime('%b %d, %Y')}")
+        # Date picker button - cleaner style
+        self.date_btn = QPushButton(f"📅  {datetime.now().strftime('%b %d, %Y')}")
         self.date_btn.setStyleSheet(f"""
             QPushButton {{
-                background-color: {COLORS['bg_tertiary']};
-                border: 1px solid {COLORS['border']};
-                border-radius: 4px;
-                padding: 6px 12px;
+                background-color: {COLORS['bg_light']};
+                border: none;
+                border-radius: 6px;
+                padding: 8px 14px;
                 color: {COLORS['text_primary']};
+                font-weight: 500;
             }}
             QPushButton:hover {{
-                background-color: {COLORS['accent_blue']};
+                background-color: {COLORS['bg_hover']};
             }}
         """)
         self.date_btn.clicked.connect(self._show_date_picker)
         control_layout.addWidget(self.date_btn)
 
-        control_layout.addSpacing(20)
+        control_layout.addSpacing(24)
 
-        # Playback controls
+        # Playback controls - pill-shaped buttons
         btn_style = f"""
             QPushButton {{
-                background-color: {COLORS['bg_tertiary']};
-                border: 1px solid {COLORS['border']};
-                border-radius: 4px;
-                padding: 6px 10px;
-                color: {COLORS['text_primary']};
+                background-color: {COLORS['bg_light']};
+                border: none;
+                border-radius: 6px;
+                padding: 8px 12px;
+                color: {COLORS['text_secondary']};
                 font-size: 14px;
+                min-width: 36px;
             }}
             QPushButton:hover {{
                 background-color: {COLORS['accent_blue']};
+                color: white;
             }}
         """
 
@@ -190,10 +195,23 @@ class UnifiedGridView(QWidget):
         step_back_btn.clicked.connect(lambda: self._seek_relative(-10))
         control_layout.addWidget(step_back_btn)
 
-        # Play/Pause
+        # Play/Pause - highlighted
         self.play_btn = QPushButton("▶")
         self.play_btn.setToolTip("Play/Pause")
-        self.play_btn.setStyleSheet(btn_style)
+        self.play_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {COLORS['accent_blue']};
+                border: none;
+                border-radius: 6px;
+                padding: 8px 14px;
+                color: white;
+                font-size: 14px;
+                min-width: 40px;
+            }}
+            QPushButton:hover {{
+                background-color: #0088ff;
+            }}
+        """)
         self.play_btn.clicked.connect(self._toggle_play)
         control_layout.addWidget(self.play_btn)
 
@@ -211,11 +229,11 @@ class UnifiedGridView(QWidget):
         skip_fwd_btn.clicked.connect(lambda: self._seek_relative(60))
         control_layout.addWidget(skip_fwd_btn)
 
-        control_layout.addSpacing(20)
+        control_layout.addSpacing(24)
 
-        # Speed selector
-        speed_label = QLabel("Speed:")
-        speed_label.setStyleSheet(f"color: {COLORS['text_secondary']};")
+        # Speed selector - cleaner style
+        speed_label = QLabel("Speed")
+        speed_label.setStyleSheet(f"color: {COLORS['text_muted']}; font-size: 12px;")
         control_layout.addWidget(speed_label)
 
         self.speed_combo = QComboBox()
@@ -223,30 +241,38 @@ class UnifiedGridView(QWidget):
         self.speed_combo.setCurrentText("1x")
         self.speed_combo.setStyleSheet(f"""
             QComboBox {{
-                background-color: {COLORS['bg_tertiary']};
-                border: 1px solid {COLORS['border']};
-                border-radius: 4px;
-                padding: 4px 8px;
+                background-color: {COLORS['bg_light']};
+                border: none;
+                border-radius: 6px;
+                padding: 6px 12px;
                 color: {COLORS['text_primary']};
+                min-width: 60px;
+            }}
+            QComboBox:hover {{
+                background-color: {COLORS['bg_hover']};
+            }}
+            QComboBox::drop-down {{
+                border: none;
             }}
         """)
         control_layout.addWidget(self.speed_combo)
 
         control_layout.addStretch()
 
-        # Live indicator / Go Live button
+        # Live indicator / Go Live button - prominent
         self.live_indicator = QPushButton("● LIVE")
         self.live_indicator.setStyleSheet(f"""
             QPushButton {{
-                background-color: #e53935;
+                background-color: {COLORS['accent_red']};
                 border: none;
-                border-radius: 4px;
-                padding: 6px 16px;
+                border-radius: 6px;
+                padding: 8px 18px;
                 color: white;
-                font-weight: bold;
+                font-weight: 600;
+                font-size: 12px;
             }}
             QPushButton:hover {{
-                background-color: #c62828;
+                background-color: #ff5544;
             }}
         """)
         self.live_indicator.clicked.connect(self._go_live)
@@ -453,26 +479,32 @@ class UnifiedGridView(QWidget):
             self.live_indicator.setText("● LIVE")
             self.live_indicator.setStyleSheet(f"""
                 QPushButton {{
-                    background-color: #e53935;
+                    background-color: {COLORS['accent_red']};
                     border: none;
-                    border-radius: 4px;
-                    padding: 6px 16px;
+                    border-radius: 6px;
+                    padding: 8px 18px;
                     color: white;
-                    font-weight: bold;
+                    font-weight: 600;
+                    font-size: 12px;
+                }}
+                QPushButton:hover {{
+                    background-color: #ff5544;
                 }}
             """)
         else:
             self.live_indicator.setText("Go Live")
             self.live_indicator.setStyleSheet(f"""
                 QPushButton {{
-                    background-color: {COLORS['bg_tertiary']};
-                    border: 1px solid {COLORS['border']};
-                    border-radius: 4px;
-                    padding: 6px 16px;
+                    background-color: {COLORS['bg_light']};
+                    border: none;
+                    border-radius: 6px;
+                    padding: 8px 18px;
                     color: {COLORS['text_primary']};
+                    font-weight: 500;
+                    font-size: 12px;
                 }}
                 QPushButton:hover {{
-                    background-color: #e53935;
+                    background-color: {COLORS['accent_red']};
                     color: white;
                 }}
             """)
