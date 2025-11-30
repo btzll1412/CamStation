@@ -295,7 +295,11 @@ class UnifiedGridView(QWidget):
         for i, (camera, device) in enumerate(existing):
             if i < len(self.cells):
                 self.cells[i].set_camera(camera, device)
-                self.cells[i].set_timeline_position(self._current_position, self._start_time, self._end_time)
+                # Use NOW if we're in live mode
+                if self._is_live:
+                    self.cells[i].set_timeline_position(datetime.now(), self._start_time, datetime.now())
+                else:
+                    self.cells[i].set_timeline_position(self._current_position, self._start_time, self._end_time)
 
         self.camera_count_changed.emit(self.get_camera_count())
 
@@ -323,8 +327,11 @@ class UnifiedGridView(QWidget):
 
         if target:
             target.set_camera(camera, device)
-            # Sync to current timeline position
-            target.set_timeline_position(self._current_position, self._start_time, self._end_time)
+            # Sync to current timeline position - use NOW if we're in live mode
+            if self._is_live:
+                target.set_timeline_position(datetime.now(), self._start_time, datetime.now())
+            else:
+                target.set_timeline_position(self._current_position, self._start_time, self._end_time)
             self.camera_count_changed.emit(self.get_camera_count())
 
     def get_camera_count(self) -> int:

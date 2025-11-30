@@ -250,9 +250,8 @@ class UnifiedCameraCell(QFrame):
         except Exception as e:
             self._status = "no_recording"
             self.video_label.setText(
-                f"<div style='text-align: center; color: {COLORS['text_secondary']};'>"
-                f"<p style='font-size: 14px;'>No Recording</p>"
-                f"<p style='font-size: 11px;'>{self.camera.name}</p>"
+                f"<div style='text-align: center; color: {COLORS['text_muted']};'>"
+                f"<p style='font-size: 24px; font-weight: 300;'>NO DATA</p>"
                 f"</div>"
             )
 
@@ -333,6 +332,11 @@ class UnifiedCameraCell(QFrame):
                 self._status = "paused"
             elif status == "error":
                 self._status = "no_recording"
+                self.video_label.setText(
+                    f"<div style='text-align: center; color: {COLORS['text_muted']};'>"
+                    f"<p style='font-size: 24px; font-weight: 300;'>NO DATA</p>"
+                    f"</div>"
+                )
 
     def _on_playback_position(self, position: datetime):
         """Handle playback position."""
