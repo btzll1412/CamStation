@@ -25,11 +25,14 @@ from typing import Optional, Callable
 from threading import Lock
 from datetime import datetime, timedelta
 import json
+import logging
 
 from models.device import Camera, Device
 from core.stream_manager import StreamManager
 from core.playback_controller import PlaybackController
 from ui.styles import COLORS
+
+logger = logging.getLogger(__name__)
 
 
 class UnifiedCameraCell(QFrame):
@@ -231,15 +234,19 @@ class UnifiedCameraCell(QFrame):
             on_position=self._on_playback_position
         )
 
-        # Build playback URL
-        rtsp_port = getattr(self.device, 'rtsp_port', 554) or 554
-        base_url = f"rtsp://{self.device.username}:{self.device.password}@{self.device.ip_address}:{rtsp_port}"
-        playback_url = f"{base_url}/Streaming/tracks/{self.camera.channel_number}01"
+        # Build playback URL based on device type
+        playback_url = self._build_playback_url()
+
+        if not playback_url:
+            logger.error(f"Failed to build playback URL for camera {self.camera.name}")
+            self._show_playback_error("Invalid URL")
+            return
 
         try:
             start = self._playback_start or (datetime.now() - timedelta(hours=24))
             end = self._playback_end or datetime.now()
 
+            logger.info(f"Starting playback for {self.camera.name}: {playback_url}")
             self._playback_controller.load_recording(playback_url, start, end)
 
             # Seek to target time
@@ -250,12 +257,46 @@ class UnifiedCameraCell(QFrame):
             self._update_timer.start(33)
 
         except Exception as e:
-            self._status = "no_recording"
-            self.video_label.setText(
-                f"<div style='text-align: center; color: {COLORS['text_muted']};'>"
-                f"<p style='font-size: 24px; font-weight: 300;'>NO DATA</p>"
-                f"</div>"
-            )
+            logger.error(f"Playback error for {self.camera.name}: {e}", exc_info=True)
+            self._show_playback_error(str(e))
+
+    def _build_playback_url(self) -> Optional[str]:
+        """Build playback URL based on device type."""
+        if not self.device or not self.camera:
+            return None
+
+        rtsp_port = getattr(self.device, 'rtsp_port', 554) or 554
+        base_url = f"rtsp://{self.device.username}:{self.device.password}@{self.device.ip_address}:{rtsp_port}"
+        channel = self.camera.channel_number
+        device_type = getattr(self.device, 'device_type', 'unknown') or 'unknown'
+
+        # Try different URL formats based on device type
+        # Hikvision uses /Streaming/tracks/CHANNEL01 for playback
+        # Some devices use /Streaming/Channels/CHANNEL01 (same as live)
+        # ONVIF uses different formats
+
+        if device_type.lower() in ('hikvision', 'nvr', 'ipcam'):
+            # Hikvision playback format
+            return f"{base_url}/Streaming/tracks/{channel}01"
+        else:
+            # Default/generic format - try the tracks format first
+            # The playback controller will append ?starttime=...
+            return f"{base_url}/Streaming/tracks/{channel}01"
+
+    def _show_playback_error(self, error_msg: str = ""):
+        """Show playback error message."""
+        self._status = "no_recording"
+        error_display = "NO DATA"
+        if error_msg:
+            # Show truncated error for debugging
+            short_error = error_msg[:50] + "..." if len(error_msg) > 50 else error_msg
+            error_display = f"NO DATA<br><small style='font-size: 10px;'>{short_error}</small>"
+
+        self.video_label.setText(
+            f"<div style='text-align: center; color: {COLORS['text_muted']};'>"
+            f"<p style='font-size: 24px; font-weight: 300;'>{error_display}</p>"
+            f"</div>"
+        )
 
     def seek(self, position: datetime):
         """Seek to position (for synchronized scrubbing)."""
@@ -328,17 +369,23 @@ class UnifiedCameraCell(QFrame):
     def _on_playback_status(self, status: str):
         """Handle playback status."""
         if self._mode == "playback":
+            logger.debug(f"Playback status for {self.camera.name if self.camera else 'unknown'}: {status}")
             if status == "playing":
                 self._status = "playing"
             elif status == "paused":
                 self._status = "paused"
-            elif status == "error":
-                self._status = "no_recording"
+            elif status == "connecting":
+                self._status = "connecting"
                 self.video_label.setText(
                     f"<div style='text-align: center; color: {COLORS['text_muted']};'>"
-                    f"<p style='font-size: 24px; font-weight: 300;'>NO DATA</p>"
+                    f"<p style='font-size: 16px;'>Connecting to recording...</p>"
                     f"</div>"
                 )
+            elif status == "buffering":
+                self._status = "buffering"
+            elif status == "error":
+                logger.warning(f"Playback error for camera {self.camera.name if self.camera else 'unknown'}")
+                self._show_playback_error("Connection failed")
 
     def _on_playback_position(self, position: datetime):
         """Handle playback position."""

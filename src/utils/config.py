@@ -39,6 +39,12 @@ class Config:
         "paths": {
             "snapshots": "~/CamStation/snapshots",
             "exports": "~/CamStation/exports"
+        },
+        "layout": {
+            # Camera layout: maps cell index to camera_id
+            # Format: {"grid": [rows, cols], "cameras": {cell_index: camera_id, ...}}
+            "grid": [2, 2],
+            "cameras": {}
         }
     }
     

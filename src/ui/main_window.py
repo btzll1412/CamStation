@@ -182,7 +182,7 @@ class MainWindow(QMainWindow):
     def _setup_central_widget(self):
         """Setup the central widget with unified grid view."""
         # Unified view (combines live + playback with timeline)
-        self.unified_view = UnifiedGridView(self.stream_manager, self.db)
+        self.unified_view = UnifiedGridView(self.stream_manager, self.db, config=self.config)
         self.unified_view.camera_count_changed.connect(self._on_camera_count_changed)
         self.unified_view.mode_changed.connect(self._on_mode_changed)
 

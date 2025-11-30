@@ -19,12 +19,15 @@ from PyQt6.QtGui import QColor, QDragEnterEvent, QDropEvent
 from typing import Optional, List
 from datetime import datetime, timedelta
 import json
+import logging
 
 from models.device import Camera, Device
 from core.stream_manager import StreamManager
 from ui.components.unified_camera_cell import UnifiedCameraCell
 from ui.components.timeline import TimelineWidget
 from ui.styles import COLORS
+
+logger = logging.getLogger(__name__)
 
 
 class DatePickerDialog(QDialog):
@@ -68,10 +71,11 @@ class UnifiedGridView(QWidget):
     camera_count_changed = pyqtSignal(int)
     mode_changed = pyqtSignal(str)  # "live" or "playback"
 
-    def __init__(self, stream_manager: StreamManager, db, parent=None):
+    def __init__(self, stream_manager: StreamManager, db, config=None, parent=None):
         super().__init__(parent)
         self.stream_manager = stream_manager
         self.db = db
+        self.config = config
 
         self.cells: List[UnifiedCameraCell] = []
         self.selected_cell: int = -1
@@ -89,7 +93,15 @@ class UnifiedGridView(QWidget):
         self._live_threshold = 5
 
         self._setup_ui()
-        self.set_grid_layout(2, 2)
+
+        # Load saved layout from config
+        saved_grid = [2, 2]
+        if self.config:
+            saved_grid = self.config.get("layout.grid", [2, 2])
+        self.set_grid_layout(saved_grid[0], saved_grid[1])
+
+        # Load saved cameras
+        self._load_layout()
 
         # Position update timer
         self._update_timer = QTimer()
@@ -303,6 +315,7 @@ class UnifiedGridView(QWidget):
                     self.cells[i].set_timeline_position(self._current_position, self._start_time, self._end_time)
 
         self.camera_count_changed.emit(self.get_camera_count())
+        self._save_layout()  # Persist grid change
 
     def add_camera(self, camera_id: int, cell_index: int = -1):
         """Add camera to grid."""
@@ -334,6 +347,7 @@ class UnifiedGridView(QWidget):
             else:
                 target.set_timeline_position(self._current_position, self._start_time, self._end_time)
             self.camera_count_changed.emit(self.get_camera_count())
+            self._save_layout()  # Persist layout change
 
     def get_camera_count(self) -> int:
         """Get number of active cameras."""
@@ -512,11 +526,16 @@ class UnifiedGridView(QWidget):
             else:
                 from_cell.set_timeline_position(self._current_position, self._start_time, self._end_time)
 
+        self._save_layout()  # Persist layout change
+
     def _on_cell_close(self, index: int):
         """Handle cell close (X button)."""
         if 0 <= index < len(self.cells):
+            camera_name = self.cells[index].camera.name if self.cells[index].camera else "unknown"
             self.cells[index].clear()
             self.camera_count_changed.emit(self.get_camera_count())
+            self._save_layout()  # Persist layout change
+            logger.info(f"Removed camera '{camera_name}' from cell {index}")
 
     def _on_fullscreen(self, camera_id: int):
         """Handle fullscreen request."""
@@ -533,3 +552,58 @@ class UnifiedGridView(QWidget):
     @property
     def is_live(self) -> bool:
         return self._is_live
+
+    def _save_layout(self):
+        """Save current layout to config."""
+        if not self.config:
+            return
+
+        # Build camera map: cell_index -> camera_id
+        cameras = {}
+        for i, cell in enumerate(self.cells):
+            if cell.camera:
+                cameras[str(i)] = cell.camera.id
+
+        # Save to config
+        self.config.set("layout.grid", [self.rows, self.cols])
+        self.config.set("layout.cameras", cameras)
+        logger.info(f"Saved layout: {self.rows}x{self.cols} grid with {len(cameras)} cameras")
+
+    def _load_layout(self):
+        """Load saved layout from config."""
+        if not self.config:
+            return
+
+        cameras = self.config.get("layout.cameras", {})
+        if not cameras:
+            return
+
+        logger.info(f"Loading saved layout with {len(cameras)} cameras")
+
+        for cell_index_str, camera_id in cameras.items():
+            try:
+                cell_index = int(cell_index_str)
+                if 0 <= cell_index < len(self.cells):
+                    # Verify camera still exists in database
+                    camera = self.db.get_camera(camera_id)
+                    if camera:
+                        device = self.db.get_device(camera.device_id)
+                        if device:
+                            self.cells[cell_index].set_camera(camera, device)
+                            if self._is_live:
+                                self.cells[cell_index].set_timeline_position(
+                                    datetime.now(), self._start_time, datetime.now()
+                                )
+                            else:
+                                self.cells[cell_index].set_timeline_position(
+                                    self._current_position, self._start_time, self._end_time
+                                )
+                            logger.debug(f"Loaded camera {camera.name} into cell {cell_index}")
+                        else:
+                            logger.warning(f"Device {camera.device_id} not found for camera {camera_id}")
+                    else:
+                        logger.warning(f"Camera {camera_id} not found in database, removing from layout")
+            except (ValueError, TypeError) as e:
+                logger.error(f"Error loading camera at cell {cell_index_str}: {e}")
+
+        self.camera_count_changed.emit(self.get_camera_count())
