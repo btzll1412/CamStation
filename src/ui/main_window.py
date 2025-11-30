@@ -225,8 +225,8 @@ class MainWindow(QMainWindow):
         self.view_stack = QStackedWidget()
         layout.addWidget(self.view_stack)
 
-        # Live view
-        self.live_view = LiveViewWidget(self.config, self.stream_manager)
+        # Live view - pass db reference for drag & drop support
+        self.live_view = LiveViewWidget(self.config, self.stream_manager, self.db)
         self.view_stack.addWidget(self.live_view)
 
         # Playback view
@@ -384,7 +384,14 @@ class MainWindow(QMainWindow):
         self.live_btn.setChecked(False)
         self.playback_btn.setChecked(True)
 
-        self.statusbar.showMessage("Playback mode", 2000)
+        # Check if we have a selected camera
+        if not self._selected_camera_id:
+            self.playback_video.setText(
+                "Select a camera from the device tree to view playback.\n\n"
+                "Note: Playback requires the camera or NVR to have recordings."
+            )
+
+        self.statusbar.showMessage("Playback mode - Select a camera", 2000)
 
     # === Action Handlers ===
 
@@ -453,8 +460,60 @@ class MainWindow(QMainWindow):
 
     def _on_lpr_search(self):
         """Handle LPR search action."""
-        # TODO: Implement LPR search dialog
-        self.statusbar.showMessage("LPR search coming soon", 2000)
+        from ui.dialogs import LPRSearchDialog
+        dialog = LPRSearchDialog(self.db, self)
+        dialog.exec()
+
+    def _open_camera_fullscreen(self, camera_id: int):
+        """Open a camera in fullscreen mode."""
+        self.live_view.open_fullscreen(camera_id)
+
+    def _show_ptz_controls(self, camera_id: int):
+        """Show PTZ controls for a camera."""
+        from ui.components import PTZControlsOverlay
+
+        # Create PTZ overlay if not exists
+        if not hasattr(self, '_ptz_overlay') or self._ptz_overlay is None:
+            self._ptz_overlay = PTZControlsOverlay(self)
+            self._ptz_overlay.close_requested.connect(self._hide_ptz_controls)
+            self._ptz_overlay.move_start.connect(self._on_ptz_move)
+            self._ptz_overlay.move_stop.connect(self._on_ptz_stop)
+            self._ptz_overlay.zoom_start.connect(self._on_ptz_zoom)
+            self._ptz_overlay.zoom_stop.connect(self._on_ptz_stop)
+            self._ptz_overlay.goto_preset.connect(self._on_ptz_preset)
+
+        self._ptz_overlay.set_camera(camera_id)
+        self._ptz_overlay.show()
+
+        # Position near bottom-right
+        x = self.width() - self._ptz_overlay.width() - 20
+        y = self.height() - self._ptz_overlay.height() - 100
+        self._ptz_overlay.move(x, y)
+
+    def _hide_ptz_controls(self):
+        """Hide PTZ controls overlay."""
+        if hasattr(self, '_ptz_overlay') and self._ptz_overlay:
+            self._ptz_overlay.hide()
+
+    def _on_ptz_move(self, direction: str, speed: float):
+        """Handle PTZ movement."""
+        # TODO: Send PTZ command to camera
+        self.statusbar.showMessage(f"PTZ: {direction} at {speed:.0%} speed", 1000)
+
+    def _on_ptz_stop(self):
+        """Handle PTZ stop."""
+        # TODO: Send PTZ stop command
+        pass
+
+    def _on_ptz_zoom(self, direction: str):
+        """Handle PTZ zoom."""
+        # TODO: Send PTZ zoom command
+        self.statusbar.showMessage(f"PTZ Zoom: {direction}", 1000)
+
+    def _on_ptz_preset(self, preset_id: int):
+        """Handle PTZ preset."""
+        # TODO: Go to PTZ preset
+        self.statusbar.showMessage(f"PTZ: Going to preset {preset_id}", 1000)
 
     def _on_about(self):
         """Show about dialog."""
@@ -512,41 +571,71 @@ class MainWindow(QMainWindow):
 
     def _start_playback_for_camera(self, camera):
         """Start playback for a camera."""
-        # Get device for RTSP URL construction
-        device = self.db.get_device(camera.device_id)
-        if not device:
-            return
+        try:
+            # Get device for RTSP URL construction
+            device = self.db.get_device(camera.device_id)
+            if not device:
+                self.playback_video.setText(f"Device not found for camera: {camera.name}")
+                return
 
-        # Default to last 24 hours
-        end_time = datetime.now()
-        start_time = end_time - timedelta(hours=24)
+            # Show loading message
+            self.playback_video.setText(f"Loading playback for {camera.name}...")
 
-        # Create playback controller
-        self.playback_controller = PlaybackController(
-            on_frame=self._on_playback_frame,
-            on_status=self._on_playback_status,
-            on_position=self._on_playback_position
-        )
+            # Default to last 24 hours
+            end_time = datetime.now()
+            start_time = end_time - timedelta(hours=24)
 
-        # Build RTSP playback URL
-        base_url = f"rtsp://{device.username}:{device.password}@{device.ip_address}:{device.rtsp_port}"
-        playback_url = f"{base_url}/Streaming/tracks/{camera.channel_number}01"
+            # Stop existing playback controller
+            if self.playback_controller:
+                self.playback_controller.stop()
 
-        # Load recording
-        self.playback_controller.load_recording(
-            playback_url, start_time, end_time
-        )
+            # Create playback controller
+            self.playback_controller = PlaybackController(
+                on_frame=self._on_playback_frame,
+                on_status=self._on_playback_status,
+                on_position=self._on_playback_position
+            )
 
-        # Setup timeline
-        self.timeline.set_time_range(start_time, end_time)
-        self.timeline.set_current_time(start_time)
-        self.timeline.set_thumbnail_callback(self.playback_controller.get_thumbnail)
+            # Build RTSP playback URL based on device type
+            rtsp_port = getattr(device, 'rtsp_port', 554) or 554
 
-        # Setup playback controls
-        self.playback_controls.set_duration(end_time - start_time)
+            # For Hikvision devices, use playback URL format
+            base_url = f"rtsp://{device.username}:{device.password}@{device.ip_address}:{rtsp_port}"
 
-        # Start playback
-        self.playback_controller.play()
+            # Try different URL formats
+            # Format 1: Hikvision playback
+            playback_url = f"{base_url}/Streaming/tracks/{camera.channel_number}01"
+
+            # Load recording
+            self.playback_controller.load_recording(
+                playback_url, start_time, end_time
+            )
+
+            # Setup timeline
+            self.timeline.set_time_range(start_time, end_time)
+            self.timeline.set_current_time(start_time)
+            self.timeline.set_thumbnail_callback(self.playback_controller.get_thumbnail)
+
+            # Setup playback controls
+            self.playback_controls.set_duration(end_time - start_time)
+
+            # Start playback
+            self.playback_controller.play()
+
+            self.statusbar.showMessage(f"Playing: {camera.name}", 2000)
+
+        except Exception as e:
+            error_msg = str(e)
+            self.playback_video.setText(
+                f"Playback Error\n\n"
+                f"Camera: {camera.name}\n"
+                f"Error: {error_msg}\n\n"
+                "Possible causes:\n"
+                "- No recordings available on device\n"
+                "- Camera does not have SD card storage\n"
+                "- Device is not reachable"
+            )
+            self.statusbar.showMessage(f"Playback error: {error_msg}", 5000)
 
     def _on_playback_frame(self, frame, timestamp):
         """Handle new playback frame."""
