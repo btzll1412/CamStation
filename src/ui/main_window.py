@@ -1,41 +1,35 @@
 """
 Main application window for CamStation.
 
-Clean, modern interface with:
-- Device tree sidebar
-- Multi-camera grid view
-- Timeline playback (UniFi Protect style)
-- PTZ controls overlay
+Digital Watchdog-style unified interface:
+- Single view for live and playback (no mode switching)
+- Timeline at bottom controls live vs playback
+- Drag & drop cameras from device tree
+- All cameras sync to timeline position
 """
 
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QSplitter, QToolBar, QStatusBar, QMenuBar,
-    QMenu, QMessageBox, QDockWidget, QLabel,
-    QStackedWidget, QPushButton, QSizePolicy,
-    QApplication
+    QToolBar, QStatusBar, QMenu, QMessageBox, QDockWidget,
+    QLabel, QPushButton, QSizePolicy, QApplication
 )
-from PyQt6.QtCore import Qt, QSize, QTimer, pyqtSignal
-from PyQt6.QtGui import QAction, QIcon, QKeySequence
+from PyQt6.QtCore import Qt, QSize, QTimer
+from PyQt6.QtGui import QAction, QKeySequence
 
-from typing import Optional, Dict
-from datetime import datetime, timedelta
+from typing import Optional
+from datetime import datetime
 
 from ui.styles import get_stylesheet, COLORS
 from ui.device_tree import DeviceTreeWidget
-from ui.live_view import LiveViewWidget
-from ui.playback_view import PlaybackViewWidget
+from ui.unified_view import UnifiedGridView
 from ui.dialogs.add_device_dialog import AddDeviceDialog
-from ui.components.timeline import TimelineWidget, TimelineEvent
-from ui.components.playback_controls import PlaybackControls
 from utils.config import Config
 from utils.database import Database
 from core.stream_manager import StreamManager
-from core.playback_controller import PlaybackController
 
 
 class MainWindow(QMainWindow):
-    """Main application window."""
+    """Main application window with unified live/playback view."""
 
     def __init__(self, config: Config, db: Database):
         super().__init__()
@@ -44,10 +38,8 @@ class MainWindow(QMainWindow):
 
         # Core services
         self.stream_manager = StreamManager(max_streams=32)
-        self.playback_controller: Optional[PlaybackController] = None
 
         # State
-        self._current_mode = "live"  # live, playback
         self._selected_camera_id: Optional[int] = None
 
         # Setup
@@ -119,21 +111,6 @@ class MainWindow(QMainWindow):
         fullscreen_action.triggered.connect(self._toggle_fullscreen)
         view_menu.addAction(fullscreen_action)
 
-        # Playback menu
-        playback_menu = menubar.addMenu("&Playback")
-
-        live_mode_action = QAction("&Live View", self)
-        live_mode_action.setShortcut(QKeySequence("Ctrl+L"))
-        live_mode_action.triggered.connect(self._switch_to_live)
-        playback_menu.addAction(live_mode_action)
-
-        playback_menu.addSeparator()
-
-        search_recordings_action = QAction("&Search Recordings...", self)
-        search_recordings_action.setShortcut(QKeySequence("Ctrl+F"))
-        search_recordings_action.triggered.connect(self._on_search_recordings)
-        playback_menu.addAction(search_recordings_action)
-
         # Events menu
         events_menu = menubar.addMenu("&Events")
 
@@ -176,29 +153,18 @@ class MainWindow(QMainWindow):
 
         toolbar.addSeparator()
 
-        # View mode toggle
-        self.live_btn = QPushButton("Live")
-        self.live_btn.setCheckable(True)
-        self.live_btn.setChecked(True)
-        self.live_btn.setToolTip("Switch to live view")
-        self.live_btn.clicked.connect(self._switch_to_live)
-        toolbar.addWidget(self.live_btn)
-
-        self.playback_btn = QPushButton("Playback")
-        self.playback_btn.setCheckable(True)
-        self.playback_btn.setToolTip("Switch to playback mode")
-        self.playback_btn.clicked.connect(self._switch_to_playback)
-        toolbar.addWidget(self.playback_btn)
-
-        toolbar.addSeparator()
-
         # Grid layout buttons
-        grid_sizes = [(1, "1x1"), (2, "2x2"), (3, "3x3"), (4, "4x4")]
+        grid_sizes = [(1, "1x1"), (2, "2x2"), (3, "3x3"), (4, "4x4"), (5, "5x5")]
         for size, label in grid_sizes:
             btn = QPushButton(label)
             btn.setToolTip(f"{label} grid view")
+            btn.setCheckable(True)
             btn.clicked.connect(lambda checked, s=size: self._set_grid_layout(s, s))
             toolbar.addWidget(btn)
+            if size == 2:  # Default selection
+                btn.setChecked(True)
+
+        toolbar.addSeparator()
 
         # Spacer
         spacer = QWidget()
@@ -214,62 +180,16 @@ class MainWindow(QMainWindow):
         toolbar.addWidget(self.search_input)
 
     def _setup_central_widget(self):
-        """Setup the central widget with live view and playback."""
-        central_widget = QWidget()
-        self.setCentralWidget(central_widget)
+        """Setup the central widget with unified grid view."""
+        # Unified view (combines live + playback with timeline)
+        self.unified_view = UnifiedGridView(self.stream_manager, self.db)
+        self.unified_view.camera_count_changed.connect(self._on_camera_count_changed)
+        self.unified_view.mode_changed.connect(self._on_mode_changed)
 
-        layout = QVBoxLayout(central_widget)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
-
-        # Stacked widget for live/playback modes
-        self.view_stack = QStackedWidget()
-        layout.addWidget(self.view_stack)
-
-        # Live view - pass db reference for drag & drop support
-        self.live_view = LiveViewWidget(self.config, self.stream_manager, self.db)
-        self.view_stack.addWidget(self.live_view)
-
-        # Playback view
-        self.playback_widget = self._create_playback_widget()
-        self.view_stack.addWidget(self.playback_widget)
-
-        # Timeline (visible in playback mode)
-        self.timeline = TimelineWidget()
-        self.timeline.position_changed.connect(self._on_timeline_position_changed)
-        self.timeline.setVisible(False)
-        layout.addWidget(self.timeline)
-
-        # Playback controls (visible in playback mode)
-        self.playback_controls = PlaybackControls()
-        self.playback_controls.play_clicked.connect(self._on_play)
-        self.playback_controls.pause_clicked.connect(self._on_pause)
-        self.playback_controls.skip_forward.connect(lambda: self._on_skip(10))
-        self.playback_controls.skip_backward.connect(lambda: self._on_skip(-10))
-        self.playback_controls.step_forward.connect(self._on_step_forward)
-        self.playback_controls.step_backward.connect(self._on_step_backward)
-        self.playback_controls.speed_changed.connect(self._on_speed_changed)
-        self.playback_controls.setVisible(False)
-        layout.addWidget(self.playback_controls)
-
-    def _create_playback_widget(self) -> QWidget:
-        """Create the multi-camera playback view widget."""
-        # Multi-camera playback grid (like live view but for recordings)
-        self.playback_view = PlaybackViewWidget(self.db)
-        self.playback_view.position_changed.connect(self._on_playback_position_from_grid)
-        self.playback_view.playback_started.connect(lambda: self.playback_controls.set_playing(True))
-        self.playback_view.playback_paused.connect(lambda: self.playback_controls.set_playing(False))
-        self.playback_view.cameras_changed.connect(self._on_playback_cameras_changed)
-
-        # Set default time range (last 24 hours)
-        end_time = datetime.now()
-        start_time = end_time - timedelta(hours=24)
-        self.playback_view.set_time_range(start_time, end_time)
-
-        return self.playback_view
+        self.setCentralWidget(self.unified_view)
 
     def _setup_dock_widgets(self):
-        """Setup dock widgets (device tree, etc.)."""
+        """Setup dock widgets (device tree)."""
         # Device tree dock
         device_dock = QDockWidget("Devices", self)
         device_dock.setAllowedAreas(
@@ -285,6 +205,7 @@ class MainWindow(QMainWindow):
         self.device_tree = DeviceTreeWidget(self.db)
         self.device_tree.camera_selected.connect(self._on_camera_selected)
         self.device_tree.camera_double_clicked.connect(self._on_camera_double_clicked)
+        self.device_tree.add_all_cameras.connect(self._on_add_all_cameras)
         device_dock.setWidget(self.device_tree)
 
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, device_dock)
@@ -294,33 +215,38 @@ class MainWindow(QMainWindow):
         self.statusbar = QStatusBar()
         self.setStatusBar(self.statusbar)
 
-        # Stream count label
-        self.stream_count_label = QLabel("Streams: 0")
-        self.statusbar.addWidget(self.stream_count_label)
+        # Camera count
+        self.camera_count_label = QLabel("Cameras: 0")
+        self.statusbar.addWidget(self.camera_count_label)
 
         # Spacer
         spacer = QWidget()
         spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         self.statusbar.addWidget(spacer)
 
-        # Connection status
-        self.connection_label = QLabel("Ready")
-        self.statusbar.addPermanentWidget(self.connection_label)
+        # Mode indicator
+        self.mode_label = QLabel("LIVE")
+        self.mode_label.setStyleSheet(f"color: #e53935; font-weight: bold;")
+        self.statusbar.addPermanentWidget(self.mode_label)
 
     def _setup_shortcuts(self):
         """Setup keyboard shortcuts."""
-        # Space for play/pause
         from PyQt6.QtGui import QShortcut
 
+        # Space for play/pause (when in playback)
         play_shortcut = QShortcut(QKeySequence(Qt.Key.Key_Space), self)
         play_shortcut.activated.connect(self._toggle_play_pause)
 
         # Arrow keys for seeking
         left_shortcut = QShortcut(QKeySequence(Qt.Key.Key_Left), self)
-        left_shortcut.activated.connect(lambda: self._on_skip(-10))
+        left_shortcut.activated.connect(lambda: self.unified_view._seek_relative(-10))
 
         right_shortcut = QShortcut(QKeySequence(Qt.Key.Key_Right), self)
-        right_shortcut.activated.connect(lambda: self._on_skip(10))
+        right_shortcut.activated.connect(lambda: self.unified_view._seek_relative(10))
+
+        # L for live
+        live_shortcut = QShortcut(QKeySequence("L"), self)
+        live_shortcut.activated.connect(self.unified_view._go_live)
 
         # Escape for exit fullscreen
         escape_shortcut = QShortcut(QKeySequence(Qt.Key.Key_Escape), self)
@@ -333,7 +259,6 @@ class MainWindow(QMainWindow):
             self.restoreGeometry(geometry)
         else:
             self.resize(1400, 900)
-            # Center on screen
             screen = QApplication.primaryScreen().geometry()
             self.move(
                 (screen.width() - self.width()) // 2,
@@ -351,54 +276,10 @@ class MainWindow(QMainWindow):
 
     def _update_status(self):
         """Update status bar."""
-        stream_count = self.stream_manager.get_active_count()
-        self.stream_count_label.setText(f"Streams: {stream_count}")
+        count = self.unified_view.get_camera_count()
+        self.camera_count_label.setText(f"Cameras: {count}")
 
-    # === Mode Switching ===
-
-    def _switch_to_live(self):
-        """Switch to live view mode."""
-        self._current_mode = "live"
-        self.view_stack.setCurrentIndex(0)
-        self.timeline.setVisible(False)
-        self.playback_controls.setVisible(False)
-
-        self.live_btn.setChecked(True)
-        self.playback_btn.setChecked(False)
-
-        # Stop playback if running
-        if self.playback_controller:
-            self.playback_controller.stop()
-
-        self.statusbar.showMessage("Live view", 2000)
-
-    def _switch_to_playback(self):
-        """Switch to playback mode."""
-        self._current_mode = "playback"
-        self.view_stack.setCurrentIndex(1)
-        self.timeline.setVisible(True)
-        self.playback_controls.setVisible(True)
-
-        self.live_btn.setChecked(False)
-        self.playback_btn.setChecked(True)
-
-        # Update timeline with playback view's time range
-        if hasattr(self, 'playback_view'):
-            end_time = datetime.now()
-            start_time = end_time - timedelta(hours=24)
-            self.playback_view.set_time_range(start_time, end_time)
-            self.timeline.set_time_range(start_time, end_time)
-            self.timeline.set_current_time(start_time)
-            self.playback_controls.set_duration(end_time - start_time)
-
-        active = self.playback_view.get_active_count() if hasattr(self, 'playback_view') else 0
-        self.statusbar.showMessage(
-            f"Playback mode - Drag cameras to grid ({active} active)" if active > 0
-            else "Playback mode - Drag cameras from device tree to view recordings",
-            3000
-        )
-
-    # === Action Handlers ===
+    # === Event Handlers ===
 
     def _on_add_device(self):
         """Handle add device action."""
@@ -429,14 +310,13 @@ class MainWindow(QMainWindow):
             max_channels=len(channels)
         )
 
-        # Add cameras
         for ch in channels:
             camera = Camera(
                 id=0,
                 device_id=0,
                 channel_number=ch.get("channel_number", 1),
                 name=ch.get("name", f"Channel {ch.get('channel_number', 1)}"),
-                rtsp_url="",  # Will be constructed by database
+                rtsp_url="",
                 is_online=ch.get("enabled", True)
             )
             device.cameras.append(camera)
@@ -450,17 +330,10 @@ class MainWindow(QMainWindow):
 
     def _on_settings(self):
         """Handle settings action."""
-        # TODO: Implement settings dialog
-        self.statusbar.showMessage("Settings dialog coming soon", 2000)
-
-    def _on_search_recordings(self):
-        """Handle playback search action."""
-        self._switch_to_playback()
-        # TODO: Show date picker dialog
+        self.statusbar.showMessage("Settings coming soon", 2000)
 
     def _on_motion_events(self):
         """Handle motion events action."""
-        # TODO: Implement motion events dialog
         self.statusbar.showMessage("Motion events coming soon", 2000)
 
     def _on_lpr_search(self):
@@ -469,75 +342,21 @@ class MainWindow(QMainWindow):
         dialog = LPRSearchDialog(self.db, self)
         dialog.exec()
 
-    def _open_camera_fullscreen(self, camera_id: int):
-        """Open a camera in fullscreen mode."""
-        self.live_view.open_fullscreen(camera_id)
-
-    def _show_ptz_controls(self, camera_id: int):
-        """Show PTZ controls for a camera."""
-        from ui.components import PTZControlsOverlay
-
-        # Create PTZ overlay if not exists
-        if not hasattr(self, '_ptz_overlay') or self._ptz_overlay is None:
-            self._ptz_overlay = PTZControlsOverlay(self)
-            self._ptz_overlay.close_requested.connect(self._hide_ptz_controls)
-            self._ptz_overlay.move_start.connect(self._on_ptz_move)
-            self._ptz_overlay.move_stop.connect(self._on_ptz_stop)
-            self._ptz_overlay.zoom_start.connect(self._on_ptz_zoom)
-            self._ptz_overlay.zoom_stop.connect(self._on_ptz_stop)
-            self._ptz_overlay.goto_preset.connect(self._on_ptz_preset)
-
-        self._ptz_overlay.set_camera(camera_id)
-        self._ptz_overlay.show()
-
-        # Position near bottom-right
-        x = self.width() - self._ptz_overlay.width() - 20
-        y = self.height() - self._ptz_overlay.height() - 100
-        self._ptz_overlay.move(x, y)
-
-    def _hide_ptz_controls(self):
-        """Hide PTZ controls overlay."""
-        if hasattr(self, '_ptz_overlay') and self._ptz_overlay:
-            self._ptz_overlay.hide()
-
-    def _on_ptz_move(self, direction: str, speed: float):
-        """Handle PTZ movement."""
-        # TODO: Send PTZ command to camera
-        self.statusbar.showMessage(f"PTZ: {direction} at {speed:.0%} speed", 1000)
-
-    def _on_ptz_stop(self):
-        """Handle PTZ stop."""
-        # TODO: Send PTZ stop command
-        pass
-
-    def _on_ptz_zoom(self, direction: str):
-        """Handle PTZ zoom."""
-        # TODO: Send PTZ zoom command
-        self.statusbar.showMessage(f"PTZ Zoom: {direction}", 1000)
-
-    def _on_ptz_preset(self, preset_id: int):
-        """Handle PTZ preset."""
-        # TODO: Go to PTZ preset
-        self.statusbar.showMessage(f"PTZ: Going to preset {preset_id}", 1000)
-
     def _on_about(self):
         """Show about dialog."""
         QMessageBox.about(
             self,
             "About CamStation",
             "<h2>CamStation</h2>"
-            "<p>Version 0.1.0</p>"
-            "<p>A lightweight, fast, and easy-to-use application for viewing "
-            "and managing Hikvision cameras and NVRs.</p>"
+            "<p>Version 0.2.0</p>"
+            "<p>A lightweight, fast camera management application.</p>"
             "<p>Features:</p>"
             "<ul>"
-            "<li>Live view with up to 36 cameras</li>"
-            "<li>Smooth timeline scrubbing playback</li>"
-            "<li>PTZ control</li>"
-            "<li>Motion and LPR event search</li>"
+            "<li>Unified live + playback view</li>"
+            "<li>Multi-site synchronized playback</li>"
+            "<li>Drag & drop camera management</li>"
+            "<li>Timeline scrubbing</li>"
             "</ul>"
-            "<p><a href='https://github.com/btzll1412/CamStation'>GitHub Repository</a></p>"
-            "<p>Licensed under the MIT License.</p>"
         )
 
     def _show_shortcuts(self):
@@ -551,96 +370,63 @@ class MainWindow(QMainWindow):
             "<p><b>Escape</b> - Exit fullscreen</p>"
             "<h3>Playback</h3>"
             "<p><b>Space</b> - Play/Pause</p>"
-            "<p><b>Left/Right</b> - Skip 10 seconds</p>"
-            "<p><b>Shift+Left/Right</b> - Skip 1 minute</p>"
-            "<p><b>./,</b> - Frame step forward/backward</p>"
+            "<p><b>Left/Right</b> - Seek 10 seconds</p>"
+            "<p><b>L</b> - Go to Live</p>"
             "<h3>General</h3>"
             "<p><b>Ctrl+N</b> - Add device</p>"
-            "<p><b>Ctrl+F</b> - Search recordings</p>"
-            "<p><b>Ctrl+L</b> - Live view</p>"
         )
 
     def _on_camera_selected(self, camera_id: int):
         """Handle camera selection in device tree."""
         self._selected_camera_id = camera_id
-        self.statusbar.showMessage(f"Selected camera: {camera_id}", 2000)
 
     def _on_camera_double_clicked(self, camera_id: int):
-        """Handle camera double-click to open live view."""
+        """Handle camera double-click to add to view."""
+        self.unified_view.add_camera(camera_id)
+
+    def _on_add_all_cameras(self, device_id: int):
+        """Add all cameras from a device."""
+        device = self.db.get_device(device_id)
+        if device:
+            for camera in device.cameras:
+                self.unified_view.add_camera(camera.id)
+
+    def _on_camera_count_changed(self, count: int):
+        """Handle camera count change."""
+        self.camera_count_label.setText(f"Cameras: {count}")
+
+    def _on_mode_changed(self, mode: str):
+        """Handle mode change (live/playback)."""
+        if mode == "live":
+            self.mode_label.setText("LIVE")
+            self.mode_label.setStyleSheet("color: #e53935; font-weight: bold;")
+        else:
+            self.mode_label.setText("PLAYBACK")
+            self.mode_label.setStyleSheet(f"color: {COLORS['accent_blue']}; font-weight: bold;")
+
+    def _open_camera_fullscreen(self, camera_id: int):
+        """Open a camera in fullscreen mode."""
+        from ui.live_view import FullscreenWindow
         camera = self.db.get_camera(camera_id)
         if camera:
-            if self._current_mode == "live":
-                self.live_view.add_camera_to_view(camera)
-            else:
-                self._start_playback_for_camera(camera)
+            self._fullscreen_window = FullscreenWindow(camera, self.stream_manager)
+            self._fullscreen_window.showFullScreen()
 
-    def _start_playback_for_camera(self, camera):
-        """Start playback for a camera - adds to multi-camera grid."""
-        if hasattr(self, 'playback_view'):
-            # Add camera to the playback grid
-            self.playback_view.add_camera(camera.id)
-            self.statusbar.showMessage(f"Added {camera.name} to playback", 2000)
+    def _show_ptz_controls(self, camera_id: int):
+        """Show PTZ controls for a camera."""
+        from ui.components import PTZControlsOverlay
 
-    def _on_playback_position_from_grid(self, position: datetime):
-        """Handle position update from playback grid."""
-        self.timeline.set_current_time(position)
-        self.playback_controls.set_current_time(position)
+        if not hasattr(self, '_ptz_overlay') or self._ptz_overlay is None:
+            self._ptz_overlay = PTZControlsOverlay(self)
+            self._ptz_overlay.close_requested.connect(lambda: self._ptz_overlay.hide())
 
-    def _on_playback_cameras_changed(self, count: int):
-        """Handle playback camera count change."""
-        self.statusbar.showMessage(f"Playback: {count} camera(s) active", 2000)
-
-    def _on_timeline_position_changed(self, position: datetime):
-        """Handle timeline scrub - synchronized across all playback cameras."""
-        if hasattr(self, 'playback_view'):
-            self.playback_view.seek_all(position)
-
-    def _on_play(self):
-        """Handle play button - plays all cameras in playback grid."""
-        if hasattr(self, 'playback_view'):
-            self.playback_view.play_all()
-
-    def _on_pause(self):
-        """Handle pause button - pauses all cameras in playback grid."""
-        if hasattr(self, 'playback_view'):
-            self.playback_view.pause_all()
-
-    def _toggle_play_pause(self):
-        """Toggle play/pause for all playback cameras."""
-        if self._current_mode == "playback" and hasattr(self, 'playback_view'):
-            if self.playback_view.is_playing:
-                self.playback_view.pause_all()
-            else:
-                self.playback_view.play_all()
-
-    def _on_skip(self, seconds: int):
-        """Handle skip forward/backward - synchronized across all cameras."""
-        if hasattr(self, 'playback_view'):
-            self.playback_view.seek_relative(seconds)
-
-    def _on_step_forward(self):
-        """Handle step forward."""
-        if hasattr(self, 'playback_view'):
-            self.playback_view.seek_relative(1.0 / 30.0)  # ~1 frame at 30fps
-
-    def _on_step_backward(self):
-        """Handle step backward."""
-        if hasattr(self, 'playback_view'):
-            self.playback_view.seek_relative(-1.0 / 30.0)  # ~1 frame at 30fps
-
-    def _on_speed_changed(self, speed: float):
-        """Handle speed change - applies to all playback cameras."""
-        # Speed control for multi-camera playback is per-cell
-        # TODO: Add global speed control to PlaybackViewWidget
-        pass
+        self._ptz_overlay.set_camera(camera_id)
+        self._ptz_overlay.show()
+        self._ptz_overlay.move(self.width() - 260, self.height() - 460)
 
     def _set_grid_layout(self, rows: int, cols: int):
-        """Set the grid layout for current view (live or playback)."""
-        if self._current_mode == "live":
-            self.live_view.set_grid_layout(rows, cols)
-        else:
-            if hasattr(self, 'playback_view'):
-                self.playback_view.set_grid_layout(rows, cols)
+        """Set the grid layout."""
+        self.unified_view.set_grid_layout(rows, cols)
         self.statusbar.showMessage(f"View: {rows}x{cols} grid", 2000)
 
     def _toggle_fullscreen(self):
@@ -655,6 +441,10 @@ class MainWindow(QMainWindow):
         if self.isFullScreen():
             self.showNormal()
 
+    def _toggle_play_pause(self):
+        """Toggle play/pause."""
+        self.unified_view._toggle_play()
+
     def _on_search(self, text: str):
         """Handle search input."""
         self.device_tree._on_search(text)
@@ -663,12 +453,9 @@ class MainWindow(QMainWindow):
         """Handle window close event."""
         self._save_geometry()
 
-        # Stop all live streams
+        # Stop all streams
         self.stream_manager.stop_all()
-
-        # Stop all playback streams
-        if hasattr(self, 'playback_view'):
-            self.playback_view.stop_all()
+        self.unified_view.stop_all()
 
         # Close database
         self.db.close()
