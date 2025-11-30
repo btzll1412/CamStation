@@ -16,6 +16,10 @@ COLORS = {
     "bg_light": "#21262d",      # Elevated surfaces
     "bg_hover": "#30363d",      # Hover state
 
+    # Aliases for consistency across components
+    "bg_secondary": "#161b22",  # Same as bg_medium (for panels)
+    "bg_tertiary": "#21262d",   # Same as bg_light (for buttons/controls)
+
     # Borders
     "border": "#30363d",
     "border_light": "#484f58",
