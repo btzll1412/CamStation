@@ -8,8 +8,8 @@ from sqlalchemy import create_engine, Column, Integer, String, Boolean, DateTime
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship
 from pathlib import Path
-from typing import List, Optional
-from datetime import datetime
+from typing import List, Optional, Dict
+from datetime import datetime, timedelta
 import logging
 
 from models.device import Device, Camera
@@ -52,26 +52,52 @@ class DeviceDB(Base):
 
 class CameraDB(Base):
     """Database model for cameras/channels."""
-    
+
     __tablename__ = "cameras"
-    
+
     id = Column(Integer, primary_key=True)
     device_id = Column(Integer, ForeignKey("devices.id"), nullable=False)
     channel_number = Column(Integer, nullable=False)
     name = Column(String, nullable=False)
-    
+
     is_online = Column(Boolean, default=True)
     has_ptz = Column(Boolean, default=False)
     has_audio = Column(Boolean, default=False)
     has_lpr = Column(Boolean, default=False)
     resolution = Column(String)
-    
+
     stream_type = Column(String, default="main")
-    
+
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-    
+
     device = relationship("DeviceDB", back_populates="cameras")
+    lpr_events = relationship("LPREventDB", back_populates="camera", cascade="all, delete-orphan")
+
+
+class LPREventDB(Base):
+    """Database model for LPR (License Plate Recognition) events."""
+
+    __tablename__ = "lpr_events"
+
+    id = Column(Integer, primary_key=True)
+    camera_id = Column(Integer, ForeignKey("cameras.id"), nullable=False)
+
+    plate_number = Column(String, nullable=False, index=True)
+    timestamp = Column(DateTime, nullable=False, index=True)
+    confidence = Column(Float, default=0.0)
+
+    plate_color = Column(String)
+    vehicle_color = Column(String)
+    vehicle_type = Column(String)
+    direction = Column(String)  # in, out, unknown
+
+    snapshot_path = Column(String)  # Full image
+    plate_snapshot_path = Column(String)  # Cropped plate image
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    camera = relationship("CameraDB", back_populates="lpr_events")
 
 
 class Database:
@@ -329,10 +355,10 @@ class Database:
         # Construct RTSP URLs
         base_rtsp = device.get_rtsp_base_url()
         channel = db_camera.channel_number
-        
+
         rtsp_url = f"{base_rtsp}/Streaming/Channels/{channel}01"
         rtsp_url_sub = f"{base_rtsp}/Streaming/Channels/{channel}02"
-        
+
         return Camera(
             id=db_camera.id,
             device_id=db_camera.device_id,
@@ -347,3 +373,181 @@ class Database:
             resolution=db_camera.resolution,
             stream_type=db_camera.stream_type
         )
+
+    # === LPR Event Operations ===
+
+    def add_lpr_event(self, camera_id: int, plate_number: str, timestamp: datetime,
+                      confidence: float = 0.0, plate_color: str = None,
+                      vehicle_color: str = None, vehicle_type: str = None,
+                      direction: str = None, snapshot_path: str = None,
+                      plate_snapshot_path: str = None) -> int:
+        """
+        Add an LPR event to the database.
+
+        Returns:
+            The new event ID
+        """
+        session = self.Session()
+        try:
+            db_event = LPREventDB(
+                camera_id=camera_id,
+                plate_number=plate_number.upper(),
+                timestamp=timestamp,
+                confidence=confidence,
+                plate_color=plate_color,
+                vehicle_color=vehicle_color,
+                vehicle_type=vehicle_type,
+                direction=direction,
+                snapshot_path=snapshot_path,
+                plate_snapshot_path=plate_snapshot_path
+            )
+
+            session.add(db_event)
+            session.commit()
+            return db_event.id
+
+        except Exception as e:
+            session.rollback()
+            logger.error(f"Error adding LPR event: {e}")
+            raise
+        finally:
+            session.close()
+
+    def search_lpr_events(self, start_time: datetime = None, end_time: datetime = None,
+                          plate_number: str = None, camera_id: int = None,
+                          direction: str = None, limit: int = 100,
+                          offset: int = 0) -> List[Dict]:
+        """
+        Search for LPR events.
+
+        Args:
+            start_time: Search start time (optional)
+            end_time: Search end time (optional)
+            plate_number: Plate number filter with wildcards (optional)
+            camera_id: Filter by camera (optional)
+            direction: Filter by direction (in/out) (optional)
+            limit: Maximum results
+            offset: Result offset for pagination
+
+        Returns:
+            List of LPR events as dictionaries
+        """
+        session = self.Session()
+        try:
+            query = session.query(LPREventDB)
+
+            if start_time:
+                query = query.filter(LPREventDB.timestamp >= start_time)
+            if end_time:
+                query = query.filter(LPREventDB.timestamp <= end_time)
+            if plate_number:
+                # Support wildcards with * or %
+                plate_filter = plate_number.replace('*', '%').upper()
+                query = query.filter(LPREventDB.plate_number.like(plate_filter))
+            if camera_id:
+                query = query.filter(LPREventDB.camera_id == camera_id)
+            if direction:
+                query = query.filter(LPREventDB.direction == direction)
+
+            # Order by timestamp descending (newest first)
+            query = query.order_by(LPREventDB.timestamp.desc())
+
+            # Apply pagination
+            query = query.offset(offset).limit(limit)
+
+            results = []
+            for event in query.all():
+                # Get camera name
+                camera = session.query(CameraDB).filter_by(id=event.camera_id).first()
+                camera_name = camera.name if camera else "Unknown"
+
+                results.append({
+                    'id': event.id,
+                    'camera_id': event.camera_id,
+                    'camera_name': camera_name,
+                    'plate_number': event.plate_number,
+                    'timestamp': event.timestamp,
+                    'confidence': event.confidence,
+                    'plate_color': event.plate_color,
+                    'vehicle_color': event.vehicle_color,
+                    'vehicle_type': event.vehicle_type,
+                    'direction': event.direction,
+                    'snapshot_path': event.snapshot_path,
+                    'plate_snapshot_path': event.plate_snapshot_path
+                })
+
+            return results
+
+        finally:
+            session.close()
+
+    def get_lpr_event_count(self, start_time: datetime = None, end_time: datetime = None,
+                            plate_number: str = None, camera_id: int = None) -> int:
+        """Get count of LPR events matching criteria."""
+        session = self.Session()
+        try:
+            query = session.query(LPREventDB)
+
+            if start_time:
+                query = query.filter(LPREventDB.timestamp >= start_time)
+            if end_time:
+                query = query.filter(LPREventDB.timestamp <= end_time)
+            if plate_number:
+                plate_filter = plate_number.replace('*', '%').upper()
+                query = query.filter(LPREventDB.plate_number.like(plate_filter))
+            if camera_id:
+                query = query.filter(LPREventDB.camera_id == camera_id)
+
+            return query.count()
+
+        finally:
+            session.close()
+
+    def get_unique_plates(self, start_time: datetime = None, end_time: datetime = None,
+                          camera_id: int = None) -> List[str]:
+        """Get list of unique plate numbers."""
+        session = self.Session()
+        try:
+            query = session.query(LPREventDB.plate_number).distinct()
+
+            if start_time:
+                query = query.filter(LPREventDB.timestamp >= start_time)
+            if end_time:
+                query = query.filter(LPREventDB.timestamp <= end_time)
+            if camera_id:
+                query = query.filter(LPREventDB.camera_id == camera_id)
+
+            return [row[0] for row in query.all()]
+
+        finally:
+            session.close()
+
+    def delete_lpr_event(self, event_id: int):
+        """Delete an LPR event."""
+        session = self.Session()
+        try:
+            event = session.query(LPREventDB).filter_by(id=event_id).first()
+            if event:
+                session.delete(event)
+                session.commit()
+
+        except Exception as e:
+            session.rollback()
+            logger.error(f"Error deleting LPR event: {e}")
+        finally:
+            session.close()
+
+    def cleanup_old_lpr_events(self, days_to_keep: int = 30):
+        """Delete LPR events older than specified days."""
+        session = self.Session()
+        try:
+            cutoff = datetime.utcnow() - timedelta(days=days_to_keep)
+            session.query(LPREventDB).filter(LPREventDB.timestamp < cutoff).delete()
+            session.commit()
+            logger.info(f"Cleaned up LPR events older than {days_to_keep} days")
+
+        except Exception as e:
+            session.rollback()
+            logger.error(f"Error cleaning up LPR events: {e}")
+        finally:
+            session.close()

@@ -21,6 +21,11 @@ python-dotenv>=1.0.0
 xmltodict>=0.13.0
 lxml>=4.9.0
 
+# ONVIF Support
+onvif-zeep>=0.2.12
+zeep>=4.2.0
+WSDiscovery>=2.0.0
+
 # Database (for local device storage)
 sqlalchemy>=2.0.0
 
