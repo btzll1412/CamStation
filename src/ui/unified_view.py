@@ -279,6 +279,7 @@ class UnifiedGridView(QWidget):
                 cell.clicked.connect(self._on_cell_clicked)
                 cell.double_clicked.connect(self._on_cell_double_clicked)
                 cell.camera_dropped.connect(self._on_camera_dropped)
+                cell.camera_swapped.connect(self._on_camera_swapped)
                 cell.close_requested.connect(self._on_cell_close)
                 cell.fullscreen_requested.connect(self._on_fullscreen)
 
@@ -477,6 +478,39 @@ class UnifiedGridView(QWidget):
     def _on_camera_dropped(self, cell_index: int, camera_id: int):
         """Handle camera drop."""
         self.add_camera(camera_id, cell_index)
+
+    def _on_camera_swapped(self, from_index: int, to_index: int):
+        """Handle camera swap between cells."""
+        if not (0 <= from_index < len(self.cells) and 0 <= to_index < len(self.cells)):
+            return
+
+        from_cell = self.cells[from_index]
+        to_cell = self.cells[to_index]
+
+        # Store camera info from both cells
+        from_camera = from_cell.camera
+        from_device = from_cell.device
+        to_camera = to_cell.camera
+        to_device = to_cell.device
+
+        # Clear both cells
+        from_cell.clear()
+        to_cell.clear()
+
+        # Swap cameras
+        if from_camera and from_device:
+            to_cell.set_camera(from_camera, from_device)
+            if self._is_live:
+                to_cell.set_timeline_position(datetime.now(), self._start_time, datetime.now())
+            else:
+                to_cell.set_timeline_position(self._current_position, self._start_time, self._end_time)
+
+        if to_camera and to_device:
+            from_cell.set_camera(to_camera, to_device)
+            if self._is_live:
+                from_cell.set_timeline_position(datetime.now(), self._start_time, datetime.now())
+            else:
+                from_cell.set_timeline_position(self._current_position, self._start_time, self._end_time)
 
     def _on_cell_close(self, index: int):
         """Handle cell close (X button)."""

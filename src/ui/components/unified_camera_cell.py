@@ -13,10 +13,10 @@ from PyQt6.QtWidgets import (
     QWidget, QFrame, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QMenu, QSizePolicy
 )
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QMimeData, QByteArray, QPoint
 from PyQt6.QtGui import (
     QImage, QPixmap, QPainter, QColor, QFont, QAction,
-    QDragEnterEvent, QDropEvent, QDragLeaveEvent
+    QDragEnterEvent, QDropEvent, QDragLeaveEvent, QDrag, QMouseEvent
 )
 
 import cv2
@@ -44,6 +44,7 @@ class UnifiedCameraCell(QFrame):
     clicked = pyqtSignal(int)  # cell_index
     double_clicked = pyqtSignal(int)  # cell_index
     camera_dropped = pyqtSignal(int, int)  # cell_index, camera_id
+    camera_swapped = pyqtSignal(int, int)  # from_cell_index, to_cell_index
     close_requested = pyqtSignal(int)  # cell_index
     fullscreen_requested = pyqtSignal(int)  # camera_id
 
@@ -63,6 +64,7 @@ class UnifiedCameraCell(QFrame):
         self._is_drag_over = False
         self._current_time: Optional[datetime] = None
         self._target_time: Optional[datetime] = None  # Timeline position
+        self._drag_start_pos: Optional[QPoint] = None  # For initiating drag
 
         # Frame data
         self._current_frame: Optional[np.ndarray] = None
@@ -458,7 +460,7 @@ class UnifiedCameraCell(QFrame):
         self._update_style(selected=selected)
 
     # Mouse events
-    def mousePressEvent(self, event):
+    def mousePressEvent(self, event: QMouseEvent):
         if event.button() == Qt.MouseButton.LeftButton:
             # Check if clicking X button
             btn_size = 24
@@ -470,8 +472,78 @@ class UnifiedCameraCell(QFrame):
                 self.close_requested.emit(self.index)
                 return
 
+            # Store drag start position for potential drag
+            self._drag_start_pos = event.pos()
             self.clicked.emit(self.index)
         super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event: QMouseEvent):
+        """Handle mouse move for drag initiation."""
+        if not self._drag_start_pos:
+            super().mouseMoveEvent(event)
+            return
+
+        # Check if we've moved far enough to start a drag
+        if (event.pos() - self._drag_start_pos).manhattanLength() < 10:
+            super().mouseMoveEvent(event)
+            return
+
+        # Only drag if we have a camera
+        if not self.camera:
+            self._drag_start_pos = None
+            super().mouseMoveEvent(event)
+            return
+
+        # Start the drag
+        drag = QDrag(self)
+        mime_data = QMimeData()
+
+        # Include cell index so we know where it came from
+        camera_json = json.dumps({
+            "camera_id": self.camera.id,
+            "camera_name": self.camera.name,
+            "device_id": self.device.id if self.device else None,
+            "source_cell_index": self.index
+        })
+        mime_data.setData("application/x-camera", QByteArray(camera_json.encode()))
+        mime_data.setText(self.camera.name)
+
+        drag.setMimeData(mime_data)
+
+        # Create drag preview pixmap
+        pixmap = self._create_drag_pixmap()
+        drag.setPixmap(pixmap)
+        drag.setHotSpot(QPoint(pixmap.width() // 2, pixmap.height() // 2))
+
+        # Execute drag
+        drag.exec(Qt.DropAction.MoveAction)
+        self._drag_start_pos = None
+
+    def mouseReleaseEvent(self, event: QMouseEvent):
+        """Clear drag start position on release."""
+        self._drag_start_pos = None
+        super().mouseReleaseEvent(event)
+
+    def _create_drag_pixmap(self) -> QPixmap:
+        """Create a preview pixmap for dragging."""
+        pixmap = QPixmap(160, 90)
+        pixmap.fill(QColor(COLORS['bg_dark']))
+
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        # Border
+        painter.setPen(QColor(COLORS['accent_blue']))
+        painter.drawRect(0, 0, 159, 89)
+
+        # Camera name
+        painter.setPen(QColor(COLORS['text_primary']))
+        painter.setFont(QFont("Segoe UI", 10))
+        name = self.camera.name if self.camera else "Camera"
+        painter.drawText(pixmap.rect(), Qt.AlignmentFlag.AlignCenter, f"📷 {name}")
+
+        painter.end()
+        return pixmap
 
     def mouseDoubleClickEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
@@ -553,9 +625,15 @@ class UnifiedCameraCell(QFrame):
             data = event.mimeData().data("application/x-camera")
             camera_data = json.loads(bytes(data).decode())
             camera_id = camera_data.get("camera_id")
+            source_cell_index = camera_data.get("source_cell_index")
 
             if camera_id:
-                self.camera_dropped.emit(self.index, camera_id)
+                # If dragged from another cell, emit swap signal
+                if source_cell_index is not None and source_cell_index != self.index:
+                    self.camera_swapped.emit(source_cell_index, self.index)
+                else:
+                    # Dropped from device tree
+                    self.camera_dropped.emit(self.index, camera_id)
                 event.acceptProposedAction()
 
         self.update()
